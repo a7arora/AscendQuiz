@@ -456,28 +456,65 @@ def pick_question(diff, asked, all_qs):
     pool = all_qs.get(diff, [])
     return [(i, q) for i, q in enumerate(pool) if (diff, i) not in asked]
 
+def closest_available_difficulty(target_diff, asked, all_qs):
+    """Return the closest difficulty with unanswered questions; ties go higher."""
+    available_difficulties = [
+        d for d in range(1, 9) if pick_question(d, asked, all_qs)
+    ]
+    if not available_difficulties:
+        return None
+    return min(available_difficulties, key=lambda d: (abs(d - target_diff), -d))
+
+
 def find_next_difficulty(current_diff, going_up, asked, all_qs):
-    next_diff = current_diff + 1 if going_up else current_diff - 1
-    if 1 <= next_diff <= 8 and pick_question(next_diff, asked, all_qs):
-        return next_diff
-    search_range = (
-        range(next_diff + 1, 9) if going_up else range(next_diff - 1, 0, -1)
-    )
-    for d in search_range:
-        if pick_question(d, asked, all_qs):
-            return d
-    return current_diff
+    # First try the intended one-step adaptive move. If unavailable, choose
+    # the nearest difficulty to that intended target (ties go higher).
+    target_diff = current_diff + 1 if going_up else current_diff - 1
+    target_diff = max(1, min(8, target_diff))
+    return closest_available_difficulty(target_diff, asked, all_qs)
+
 
 def get_next_question(current_diff, asked, all_qs):
-    available = pick_question(current_diff, asked, all_qs)
-    if not available:
+    # If the requested level is empty, fall back to the nearest available level.
+    actual_diff = closest_available_difficulty(current_diff, asked, all_qs)
+    if actual_diff is None:
         return current_diff, None, None
+    available = pick_question(actual_diff, asked, all_qs)
     idx, q = random.choice(available)
-    return current_diff, idx, q
+    return actual_diff, idx, q
 
 def accuracy_on_levels(answers, levels):
     filtered = [c for d, c in answers if d in levels]
     return sum(filtered) / len(filtered) if filtered else 0
+
+def maximum_possible_mastery_score(all_qs):
+    """Best mastery score possible if every eligible question is answered correctly."""
+    mastery_bands = {
+        (1, 2): 25,
+        (3, 4): 65,
+        (5, 6): 85,
+        (7, 8): 100
+    }
+    min_attempts_required = 3
+    possible_band_scores = []
+    for levels, weight in mastery_bands.items():
+        eligible_count = sum(
+            len(all_qs.get(level, [])) for level in levels
+        )
+        if eligible_count == 0:
+            continue
+        possible_band_scores.append(
+            weight * min(eligible_count / min_attempts_required, 1)
+        )
+    return int(round(max(possible_band_scores))) if possible_band_scores else 0
+
+
+def get_mastery_threshold(all_qs):
+    """Keep the usual 70% threshold unless the question bank cannot support it."""
+    usual_threshold = 70
+    max_possible = maximum_possible_mastery_score(all_qs)
+    return min(usual_threshold, int(round(max_possible * 0.9)))
+
 
 def compute_mastery_score(answers):
     mastery_bands = {
@@ -585,7 +622,7 @@ if "all_questions" not in st.session_state:
 Welcome to your personalized learning assistant — an AI-powered tool that transforms any PDF into a mastery-based, computer-adaptive quiz.
 **How it works:**
 This app uses a large language model (LLM) and an adaptive difficulty engine to create multiple-choice questions from your uploaded notes or textbook excerpts. These questions are labeled with how likely students are to answer them correctly, allowing precise control over quiz difficulty.
-The quiz adapts in real-time based on your performance. Starting at a medium level, each correct answer raises the difficulty, while incorrect answers lower it — just like the GRE or ALEKS. Once your **mastery score reaches 70% or higher** (calculated using your accuracy weighted by difficulty level), the system considers you to have achieved **mastery** and ends the quiz.
+The quiz adapts in real-time based on your performance. Starting at difficulty 4, each correct answer raises the target difficulty while incorrect answers lower it. If the target difficulty has no unanswered questions, the quiz chooses the closest available difficulty (breaking ties toward the higher difficulty). Once your **mastery score reaches the mastery cutoff** (normally 70%, or 90% of the maximum achievable score if the question bank cannot support 70%), the system considers you to have achieved **mastery** and ends the quiz.
 Each question includes:
 - Four answer options
 - The correct answer
@@ -645,6 +682,7 @@ elif "quiz_ready" in st.session_state and st.session_state.quiz_ready:
         st.warning("Quiz state not found. Please restart the app or re-upload a PDF.")
         st.stop()
     score = compute_mastery_score(state.get("answers", []))
+    mastery_threshold = get_mastery_threshold(all_qs)
     render_mastery_bar(score)
     if not state["quiz_end"]:
         if state["current_q"] is None and not state.get("show_explanation", False):
@@ -691,7 +729,7 @@ elif "quiz_ready" in st.session_state and st.session_state.quiz_ready:
                 state["last_explanation"] = q["explanation"]
                 state["show_explanation"] = True
                 score = compute_mastery_score(state["answers"])
-                if score >= 70:
+                if score >= mastery_threshold:
                     state["quiz_end"] = True
         if state.get("show_explanation", False):
             if state["last_correct"]:
@@ -701,20 +739,18 @@ elif "quiz_ready" in st.session_state and st.session_state.quiz_ready:
                 st.markdown("❌ **Incorrect.**", unsafe_allow_html=True)
                 st.markdown(state["last_explanation"], unsafe_allow_html=True)
             if st.button("Next Question"):
-                def find_next_difficulty(current_diff, going_up, asked, all_qs):
-                    diffs = range(current_diff + 1, 9) if going_up else range(current_diff - 1, 0, -1)
-                    for d in diffs:
-                        if pick_question(d, asked, all_qs):
-                            return d
-                    return current_diff
                 if state["last_correct"]:
-                    state["current_difficulty"] = find_next_difficulty(
+                    next_diff = find_next_difficulty(
                         state["current_difficulty"], going_up=True, asked=state["asked"], all_qs=all_qs
                     )
                 else:
-                    state["current_difficulty"] = find_next_difficulty(
+                    next_diff = find_next_difficulty(
                         state["current_difficulty"], going_up=False, asked=state["asked"], all_qs=all_qs
                     )
+                if next_diff is None:
+                    state["quiz_end"] = True
+                else:
+                    state["current_difficulty"] = next_diff
                 state["current_q"] = None
                 state["current_q_idx"] = None
                 state["show_explanation"] = False
@@ -725,10 +761,10 @@ elif "quiz_ready" in st.session_state and st.session_state.quiz_ready:
         acc = accuracy_on_levels(state["answers"], [5, 6, 7, 8])
         hard_attempts = len([1 for d, _ in state["answers"] if d >= 5])
         st.markdown("## Quiz Completed 🎉")
-        if score >= 70:
-            st.success(f"🎉 You have mastered the content! Your mastery score is {score}%. Great job!")
+        if score >= mastery_threshold:
+            st.success(f"🎉 You have mastered the content! Your mastery score is {score}% (cutoff: {mastery_threshold}%). Great job!")
         else:
-            st.warning(f"Mastery not yet achieved. Your mastery score is {score}%. Review the material and try again.")
+            st.warning(f"Mastery not yet achieved. Your mastery score is {score}% (cutoff: {mastery_threshold}%). Review the material and try again.")
         if "all_questions" in st.session_state:
             all_qs_json = json.dumps(st.session_state.all_questions, indent=2)
             st.download_button(
@@ -737,7 +773,6 @@ elif "quiz_ready" in st.session_state and st.session_state.quiz_ready:
                 file_name="ascendquiz_questions.json",
                 mime="application/json"
             )
-
 
 
 
