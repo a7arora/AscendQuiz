@@ -9,7 +9,7 @@ import random
 # Load Gemini API key from Streamlit secrets
 API_KEY = st.secrets["GEMINI_API_KEY"]
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
-MODEL_NAME = "gemini-2.5-pro"
+MODEL_NAME = "gemini-3.1-pro-preview"
 
 def extract_text_from_pdf(pdf_file):
     doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
