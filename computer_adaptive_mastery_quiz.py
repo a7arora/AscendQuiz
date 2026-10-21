@@ -8,7 +8,7 @@ import random
 
 # Load Gemini API key from Streamlit secrets
 API_KEY = st.secrets["GEMINI_API_KEY"]
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
 MODEL_NAME = "gemini-3.1-pro-preview"
 
 def extract_text_from_pdf(pdf_file):
